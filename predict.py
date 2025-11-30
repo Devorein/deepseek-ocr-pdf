@@ -7,8 +7,12 @@ import torch
 import subprocess
 import tempfile
 import warnings
+from pathlib import Path as PathlibPath
+from typing import List
 from cog import BasePredictor, Input, Path
 from transformers import AutoTokenizer
+from pdf2image import convert_from_path
+from PIL import Image
 
 # Suppress all warnings from transformers
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -71,9 +75,37 @@ class Predictor(BasePredictor):
 
         print("Model loaded successfully!")
 
+    def convert_pdf_to_images(self, pdf_path: str, temp_dir: str) -> List[str]:
+        """Convert PDF to images, one per page.
+        
+        Args:
+            pdf_path: Path to the PDF file
+            temp_dir: Temporary directory to save images
+            
+        Returns:
+            List of paths to generated image files
+        """
+        print(f"Converting PDF to images...")
+        
+        # Convert PDF to images (one per page)
+        images = convert_from_path(
+            pdf_path,
+            dpi=300,  # High quality for better OCR
+            fmt='png'
+        )
+        
+        image_paths = []
+        for i, image in enumerate(images):
+            image_path = os.path.join(temp_dir, f"page_{i+1}.png")
+            image.save(image_path, 'PNG')
+            image_paths.append(image_path)
+            print(f"  Converted page {i+1}/{len(images)}")
+        
+        return image_paths
+
     def predict(
         self,
-        image: Path = Input(description="Input image to perform OCR on (supports documents, charts, tables, etc.)"),
+        image: Path = Input(description="Input image or PDF file to perform OCR on (supports documents, charts, tables, etc.)"),
         resolution_size: str = Input(
             description="Model resolution size - affects speed and accuracy trade-off",
             choices=["Gundam (Recommended)", "Tiny", "Small", "Base", "Large"],
@@ -125,28 +157,58 @@ class Predictor(BasePredictor):
         print(f"Resolution: {resolution_size}")
         print(f"Parameters: base_size={base_size}, image_size={image_size}, crop_mode={crop_mode}")
 
-        # Create temporary directory for output
+        # Check if input is a PDF file
+        input_path = str(image)
+        is_pdf = input_path.lower().endswith('.pdf')
+        
+        # Create temporary directory for output and PDF conversion if needed
         with tempfile.TemporaryDirectory() as output_dir:
-            # Run inference using the model's infer method
-            # Suppress warnings during inference
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                result = self.model.infer(
-                    self.tokenizer,
-                    prompt=prompt,
-                    image_file=str(image),
-                    output_path=output_dir,
-                    base_size=base_size,
-                    image_size=image_size,
-                    crop_mode=crop_mode,
-                    test_compress=True,
-                    save_results=False
-                )
-
-            # Return the extracted text/markdown
-            if isinstance(result, str):
-                return result
-            elif isinstance(result, dict) and 'text' in result:
-                return result['text']
+            # Handle PDF conversion
+            if is_pdf:
+                print("PDF file detected, converting to images...")
+                image_paths = self.convert_pdf_to_images(input_path, output_dir)
+                print(f"Processing {len(image_paths)} page(s)...")
             else:
-                return str(result)
+                image_paths = [input_path]
+            
+            # Process each image/page
+            results = []
+            for idx, image_path in enumerate(image_paths):
+                if len(image_paths) > 1:
+                    print(f"\nProcessing page {idx+1}/{len(image_paths)}...")
+                
+                # Run inference using the model's infer method
+                # Suppress warnings during inference
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    result = self.model.infer(
+                        self.tokenizer,
+                        prompt=prompt,
+                        image_file=image_path,
+                        output_path=output_dir,
+                        base_size=base_size,
+                        image_size=image_size,
+                        crop_mode=crop_mode,
+                        test_compress=True,
+                        save_results=False
+                    )
+                
+                # Extract text from result
+                if isinstance(result, str):
+                    page_text = result
+                elif isinstance(result, dict) and 'text' in result:
+                    page_text = result['text']
+                else:
+                    page_text = str(result)
+                
+                results.append(page_text)
+            
+            # Combine results for multi-page PDFs
+            if len(results) > 1:
+                # Add page separators for multi-page documents
+                combined_result = ""
+                for idx, page_result in enumerate(results):
+                    combined_result += f"\n\n--- Page {idx+1} ---\n\n{page_result}"
+                return combined_result.strip()
+            else:
+                return results[0]

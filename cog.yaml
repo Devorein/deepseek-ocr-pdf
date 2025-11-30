@@ -13,6 +13,7 @@ build:
     - "ffmpeg"
     - "libsm6"
     - "libxext6"
+    - "poppler-utils"
 
   # Python 3.12 (closest to tested 3.12.9)
   python_version: "3.12"

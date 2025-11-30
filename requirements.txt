@@ -19,6 +19,7 @@ easydict
 # Image processing
 Pillow
 opencv-python
+pdf2image
 
 # Additional dependencies for model execution
 numpy
